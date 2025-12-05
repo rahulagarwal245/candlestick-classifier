@@ -2,28 +2,28 @@ import streamlit as st
 import os
 import base64
 import numpy as np
-from PIL import Image
-from io import BytesIO
-import pdfkit
-import gdown
 import json
+from io import BytesIO
+from PIL import Image
+from fpdf import FPDF
+import gdown
 from tensorflow.keras.models import load_model
 
-# ---------------- CONFIG ----------------
+# --------------- CONFIG ----------------
 DRIVE_FILE_ID = "1cBgQDH-WbZuBEvBdoCwlgN3_YFiHxuHH"
 LOCAL_MODEL = "models/best_candle_cnn.h5"
 MODEL_STATS_PATH = "model_stats.json"
 IMG_SIZE = (128, 128)
 THRESHOLD = 0.55
 
-st.set_page_config(page_title="Premium Candlestick Classifier", layout="wide")
+st.set_page_config(page_title="Premium Candlestick Classifier", layout="centered")
 
-# ---------------- UTILITIES ----------------
+# --------------- UTILITIES ----------------
 
 def download_model_if_missing():
     os.makedirs("models", exist_ok=True)
     if not os.path.exists(LOCAL_MODEL):
-        st.info("Downloading model (one-time)...")
+        st.info("Downloading model...")
         url = "https://drive.google.com/uc?id=" + DRIVE_FILE_ID
         temp = LOCAL_MODEL + ".part"
         gdown.download(url, temp, quiet=False)
@@ -35,28 +35,26 @@ def load_model_cached():
     return load_model(LOCAL_MODEL)
 
 def load_model_stats():
-    if os.path.exists(MODEL_STATS_PATH):
-        try:
-            with open(MODEL_STATS_PATH, "r") as f:
-                return json.load(f)
-        except:
-            return None
-    return None
+    if not os.path.exists(MODEL_STATS_PATH):
+        return None
+    try:
+        with open(MODEL_STATS_PATH, "r") as f:
+            return json.load(f)
+    except:
+        return None
 
 def detect_last_candle(pil_img):
     img = pil_img.convert("RGB")
     w, h = img.size
-    crop_w = int(w * 0.12)
-    if crop_w < 10:
-        crop_w = 10
+    crop_w = max(10, int(w * 0.12))
     crop = img.crop((w - crop_w, 0, w, h))
     arr = np.array(crop)
 
-    green_mask = (arr[:, :, 1] > arr[:, :, 0]) & (arr[:, :, 1] > arr[:, :, 2]) & (arr[:, :, 1] > 80)
-    red_mask = (arr[:, :, 0] > arr[:, :, 1]) & (arr[:, :, 0] > arr[:, :, 2]) & (arr[:, :, 0] > 80)
+    gmask = (arr[:, :, 1] > arr[:, :, 0]) & (arr[:, :, 1] > arr[:, :, 2]) & (arr[:, :, 1] > 80)
+    rmask = (arr[:, :, 0] > arr[:, :, 1]) & (arr[:, :, 0] > arr[:, :, 2]) & (arr[:, :, 0] > 80)
 
-    n_green = int(np.sum(green_mask))
-    n_red = int(np.sum(red_mask))
+    n_green = int(np.sum(gmask))
+    n_red = int(np.sum(rmask))
     total = n_green + n_red
 
     if total < 1:
@@ -64,12 +62,9 @@ def detect_last_candle(pil_img):
 
     gf = n_green / total
     rf = n_red / total
+    return ("Bullish", gf, n_green, n_red) if gf >= rf else ("Bearish", rf, n_green, n_red)
 
-    if gf >= rf:
-        return "Bullish", gf, n_green, n_red
-    return "Bearish", rf, n_green, n_red
-
-def interpret_confidence(prob):
+def interpret_conf(prob):
     if prob >= 0.85:
         return "Very High Confidence"
     if prob >= 0.65:
@@ -78,94 +73,124 @@ def interpret_confidence(prob):
         return "Medium Confidence"
     return "Low Confidence"
 
-def image_to_base64(pil_img):
+def pil_to_bytes(pil_img):
     buf = BytesIO()
     pil_img.save(buf, format="PNG")
-    byte_im = buf.getvalue()
-    return base64.b64encode(byte_im).decode()
+    return buf.getvalue()
 
+# --------------- PDF GENERATOR (R3 Minimal Black & White) ----------------
 
-# ---------------- LOAD MODEL ----------------
+def generate_pdf(pred, prob, conf_text, accuracy, summary, pil_img):
+    pdf = FPDF()
+    pdf.add_page()
+
+    pdf.set_font("Arial", "B", 18)
+    pdf.cell(0, 10, "Candlestick Prediction Report", ln=True)
+
+    pdf.set_font("Arial", "", 12)
+    pdf.ln(5)
+    pdf.cell(0, 8, f"Prediction: {pred}", ln=True)
+    pdf.cell(0, 8, f"Probability: {prob:.2f}%", ln=True)
+    pdf.cell(0, 8, f"Confidence Level: {conf_text}", ln=True)
+    pdf.cell(0, 8, f"Model Accuracy: {accuracy:.1f}%", ln=True)
+
+    pdf.ln(10)
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 8, "Executive Summary", ln=True)
+
+    pdf.set_font("Arial", "", 12)
+    for line in summary.split("\n"):
+        pdf.multi_cell(0, 7, line)
+
+    pdf.ln(10)
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 8, "Uploaded Candle Image", ln=True)
+
+    img_bytes = pil_to_bytes(pil_img)
+    img_path = "temp_img.png"
+    with open(img_path, "wb") as f:
+        f.write(img_bytes)
+
+    pdf.image(img_path, w=120)
+
+    os.remove(img_path)
+
+    return pdf.output(dest="S").encode("latin-1")
+
+# --------------- LOAD MODEL + STATS ----------------
+
 try:
     model = load_model_cached()
 except Exception as e:
-    st.error("Model load error: " + str(e))
+    st.error("Model loading failed: " + str(e))
     st.stop()
 
 stats = load_model_stats()
 
+# --------------- UI HEADER ----------------
 
-# ---------------- UI HEADER ----------------
 st.markdown(
-    """
-    <h1 style='font-weight:700; text-align:center;'>
-        Premium Candlestick Classifier (Glassmorphism)
-    </h1>
-    """,
+    "<h1 style='text-align:center; font-weight:700;'>Premium Candlestick Classifier</h1>",
     unsafe_allow_html=True
 )
 
-st.write("Upload a candlestick image to generate prediction and a downloadable PDF report.")
+# --------------- FILE UPLOAD ----------------
 
-
-# ---------------- FILE UPLOAD ----------------
-file = st.file_uploader("Upload candlestick chart (PNG/JPG)", type=["png", "jpg", "jpeg"])
+file = st.file_uploader("Upload Candlestick Chart (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
 if file:
-
-    # Load & display
     pil_img = Image.open(file).convert("RGB")
+
     disp_w = 350
     disp_h = int(disp_w * pil_img.size[1] / pil_img.size[0])
     st.image(pil_img.resize((disp_w, disp_h)), caption="Uploaded Chart")
 
-    # -------- CURRENT CANDLE --------
+    # --- Current Candle ---
     label_now, conf_now, g_now, r_now = detect_last_candle(pil_img)
 
     st.subheader("🕯 Current Candle (Visual)")
     st.write("Type:", label_now)
     st.write("Confidence:", round(conf_now, 2))
-    st.caption(f"Green pixels: {g_now} | Red pixels: {r_now}")
+    st.caption(f"Green: {g_now} | Red: {r_now}")
 
-    # -------- MODEL PREDICTION --------
+    # --- Prediction ---
     img128 = pil_img.resize(IMG_SIZE)
-    x = np.array(img128) / 255.0
-    x = np.expand_dims(x, 0)
+    arr = np.array(img128) / 255.0
+    arr = np.expand_dims(arr, 0)
 
-    prob = float(model.predict(x)[0][0])
+    prob = float(model.predict(arr)[0][0])
     pred = "Bullish" if prob >= THRESHOLD else "Bearish"
-    pred_pct = prob * 100
-    conf_text = interpret_confidence(prob)
+    prob_pct = prob * 100
+    conf_text = interpret_conf(prob)
 
-    # -------- EXECUTIVE SUMMARY --------
-    exec_summary = f"""
-    The model identifies the uploaded candlestick structure and market sentiment.
-    Based on learned pattern behaviors, the next-day trend is assessed as **{pred}** with a probability of **{pred_pct:.1f}%**.
-    Confidence level is categorized as **{conf_text}**, reflecting how strongly the model perceives pattern alignment with historical bullish/bearish signals.
+    # --- Executive Summary ---
+    summary = (
+        f"The model evaluated the uploaded candlestick pattern and "
+        f"assigned a {pred} sentiment with a probability of {prob_pct:.1f}%. "
+        f"The confidence is categorized as {conf_text}. "
+        f"This interpretation is based on historically learned patterns."
+    )
+
+    # --- Premium Glassmorphism Card ---
+    card_html = """
+    <div style='padding:20px; border-radius:15px; 
+    background: rgba(255,255,255,0.25); 
+    backdrop-filter: blur(12px);
+    border: 2px solid; 
+    border-image: linear-gradient(135deg, #00E5FF, #005CFF) 1;
+    box-shadow: 0px 6px 20px rgba(0,0,0,0.15);'>
     """
 
-    # -------- GLASS CARD --------
-    glass_card = f"""
-    <div style="
-        padding:20px;
-        border-radius:18px;
-        backdrop-filter: blur(12px);
-        background: rgba(255,255,255,0.28);
-        border: 2px solid;
-        border-image: linear-gradient(135deg, #00E5FF, #005CFF) 1;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.15);
-        margin-top:20px;">
-        <h2 style="color:#005CFF;">Prediction Summary</h2>
-        <p><b>Next-day sentiment:</b> {pred}</p>
-        <p><b>Probability:</b> {pred_pct:.2f}%</p>
-        <p><b>Confidence Level:</b> {conf_text}</p>
-        <p><b>Model Accuracy:</b> {stats["test_accuracy"]*100:.1f}%</p>
-    </div>
-    """
+    card_html += f"<h2 style='color:#005CFF;'>Prediction Summary</h2>"
+    card_html += f"<p><b>Next-day Sentiment:</b> {pred}</p>"
+    card_html += f"<p><b>Probability:</b> {prob_pct:.2f}%</p>"
+    card_html += f"<p><b>Confidence:</b> {conf_text}</p>"
+    card_html += f"<p><b>Model Accuracy:</b> {stats['test_accuracy']*100:.1f}%</p>"
+    card_html += "</div>"
 
-    st.markdown(glass_card, unsafe_allow_html=True)
+    st.markdown(card_html, unsafe_allow_html=True)
 
-    # -------- METRICS GRID --------
+    # --- Metrics ---
     st.subheader("📈 Model Test Metrics")
     st.write(f"Accuracy: {stats['test_accuracy']:.3f}")
     st.write(f"Precision: {stats['test_precision']:.3f}")
@@ -173,31 +198,17 @@ if file:
     st.write(f"F1 Score: {stats['test_f1']:.3f}")
     st.caption(f"Evaluated on {stats['num_test_samples']} samples.")
 
-    # -------- PDF GENERATION --------
+    # --- PDF Download ---
     st.subheader("📥 Download PDF Report")
 
-    base64_img = image_to_base64(pil_img)
-
-    html_report = f"""
-    <html>
-    <body>
-        <h1>Premium Candlestick Report</h1>
-        <h2>Prediction Summary</h2>
-        <p><b>Prediction:</b> {pred}</p>
-        <p><b>Probability:</b> {pred_pct:.2f}%</p>
-        <p><b>Confidence Level:</b> {conf_text}</p>
-        <p><b>Model Accuracy:</b> {stats["test_accuracy"]*100:.1f}%</p>
-
-        <h2>Uploaded Chart</h2>
-        <img src="data:image/png;base64,{base64_img}" width="350">
-
-        <h2>Executive Summary</h2>
-        <p>{exec_summary}</p>
-    </body>
-    </html>
-    """
-
-    pdf_bytes = pdfkit.from_string(html_report, False)
+    pdf_bytes = generate_pdf(
+        pred=pred,
+        prob=prob_pct,
+        conf_text=conf_text,
+        accuracy=stats["test_accuracy"]*100,
+        summary=summary,
+        pil_img=pil_img
+    )
 
     st.download_button(
         label="Download PDF Report",
