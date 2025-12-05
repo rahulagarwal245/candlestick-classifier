@@ -5,57 +5,65 @@ from tensorflow.keras.models import load_model
 import numpy as np
 from PIL import Image
 import gdown
+import json
 
 # ===== CONFIG =====
-DRIVE_FILE_ID = "1cBgQDH-WbZuBEvBdoCwlgN3_YFiHxuHH"  # <<-- your Google Drive file id
+DRIVE_FILE_ID = "1cBgQDH-WbZuBEvBdoCwlgN3_YFiHxuHH"  # your Drive id (already set)
 LOCAL_MODEL = "models/best_candle_cnn.h5"
+MODEL_STATS_PATH = "model_stats.json"   # file you created in repo root
 IMG_SIZE = (128, 128)
 THRESHOLD = 0.55
 
 st.set_page_config(page_title="Candlestick Classifier", layout="centered")
 st.title("Candlestick Bullish / Bearish Classifier")
 
-@st.cache(allow_output_mutation=True)
-def load_or_download_model():
+# ---------- Utilities ----------
+def download_model_if_missing():
     os.makedirs("models", exist_ok=True)
-
     if not os.path.exists(LOCAL_MODEL):
-        st.info("Model not found locally. Downloading model from Google Drive (one-time)...")
+        st.info("Model not found locally. Downloading from Google Drive (one-time)...")
         url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-        tmp_path = LOCAL_MODEL + ".part"
-        # download via gdown; this handles large files robustly
-        gdown.download(url, tmp_path, quiet=False)
-        os.replace(tmp_path, LOCAL_MODEL)
+        tmp = LOCAL_MODEL + ".part"
+        gdown.download(url, tmp, quiet=False)
+        os.replace(tmp, LOCAL_MODEL)
 
-    # load the Keras model
+@st.cache_resource
+def load_model_cached():
+    download_model_if_missing()
     model = load_model(LOCAL_MODEL)
     return model
 
-# Load model (download if required)
-try:
-    model = load_or_download_model()
-except Exception as exc:
-    st.error(f"Failed to load model: {exc}")
-    st.stop()
+def load_model_stats(path=MODEL_STATS_PATH):
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
 
-# ===== UI =====
-st.markdown("Upload a candlestick image (PNG/JPG). The model expects a 30-candle style chart image.")
-uploaded = st.file_uploader("Upload candlestick image", type=["png", "jpg", "jpeg"])
+def detect_last_candle_from_image(pil_img):
+    """
+    Heuristic: crop rightmost region and count green vs red pixels.
+    Returns label (Bullish/Bearish/Unknown), confidence, and counts.
+    """
+    img = pil_img.convert("RGB")
+    w, h = img.size
+    crop_w = max(10, int(w * 0.12))
+    crop = img.crop((w - crop_w, 0, w, h))
+    arr = np.array(crop)
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB").resize(IMG_SIZE)
-    st.image(img, caption="Uploaded Image", use_column_width=False)
+    green_mask = ((arr[:,:,1] > arr[:,:,0]) & (arr[:,:,1] > arr[:,:,2]) & (arr[:,:,1] > 80))
+    red_mask = ((arr[:,:,0] > arr[:,:,1]) & (arr[:,:,0] > arr[:,:,2]) & (arr[:,:,0] > 80))
 
-    x = np.array(img) / 255.0
-    x = np.expand_dims(x, 0)
+    n_green = int(np.count_nonzero(green_mask))
+    n_red = int(np.count_nonzero(red_mask))
+    total = max(1, n_green + n_red)
+    green_frac = n_green / total
+    red_frac = n_red / total
 
-    prob = float(model.predict(x)[0][0])
-    label = "Bullish" if prob >= THRESHOLD else "Bearish"
+    if (n_green + n_red) < (0.01 * arr.shape[0] * arr.shape[1]):
+        return "Unknown", 0.0, {"n_green": n_green, "n_red": n_red, "total_color": n_green + n_red}
 
-    st.write(f"**Prediction:** {label}")
-    st.write(f"**Probability:** {prob:.4f} (Threshold = {THRESHOLD})")
-
-    if prob >= THRESHOLD:
-        st.success("Model indicates bullish sentiment for the next interval.")
-    else:
-        st.error("Model indicates bearish sentiment for the next interval.")
+    if green_frac >= red_frac:
+        return "Bullish", float(green_fr_
