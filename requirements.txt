@@ -1,0 +1,11 @@
+streamlit
+tensorflow>=2.10
+yfinance
+mplfinance
+pandas
+numpy
+matplotlib
+tqdm
+scikit-learn
+Pillow
+requests
