@@ -5,7 +5,6 @@ import numpy as np
 import json
 from io import BytesIO
 from PIL import Image
-from fpdf import FPDF
 import gdown
 from tensorflow.keras.models import load_model
 
@@ -73,51 +72,7 @@ def interpret_conf(prob):
         return "Medium Confidence"
     return "Low Confidence"
 
-def pil_to_bytes(pil_img):
-    buf = BytesIO()
-    pil_img.save(buf, format="PNG")
-    return buf.getvalue()
-
-# --------------- PDF GENERATOR (R3 Minimal Black & White) ----------------
-
-def generate_pdf(pred, prob, conf_text, accuracy, summary, pil_img):
-    pdf = FPDF()
-    pdf.add_page()
-
-    pdf.set_font("Arial", "B", 18)
-    pdf.cell(0, 10, "Candlestick Prediction Report", ln=True)
-
-    pdf.set_font("Arial", "", 12)
-    pdf.ln(5)
-    pdf.cell(0, 8, f"Prediction: {pred}", ln=True)
-    pdf.cell(0, 8, f"Probability: {prob:.2f}%", ln=True)
-    pdf.cell(0, 8, f"Confidence Level: {conf_text}", ln=True)
-    pdf.cell(0, 8, f"Model Accuracy: {accuracy:.1f}%", ln=True)
-
-    pdf.ln(10)
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 8, "Executive Summary", ln=True)
-
-    pdf.set_font("Arial", "", 12)
-    for line in summary.split("\n"):
-        pdf.multi_cell(0, 7, line)
-
-    pdf.ln(10)
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 8, "Uploaded Candle Image", ln=True)
-
-    img_bytes = pil_to_bytes(pil_img)
-    img_path = "temp_img.png"
-    with open(img_path, "wb") as f:
-        f.write(img_bytes)
-
-    pdf.image(img_path, w=120)
-
-    os.remove(img_path)
-
-    return pdf.output(dest="S").encode("latin-1")
-
-# --------------- LOAD MODEL + STATS ----------------
+# --------------- LOAD MODEL ----------------
 
 try:
     model = load_model_cached()
@@ -171,26 +126,25 @@ if file:
         f"This interpretation is based on historically learned patterns."
     )
 
-    # --- Premium Glassmorphism Card ---
-    card_html = """
-    <div style='padding:20px; border-radius:15px; 
-    background: rgba(255,255,255,0.25); 
+    # --- Glassmorphism Card ---
+    card = """
+    <div style='padding:20px; border-radius:15px;
+    background: rgba(255,255,255,0.25);
     backdrop-filter: blur(12px);
-    border: 2px solid; 
+    border: 2px solid;
     border-image: linear-gradient(135deg, #00E5FF, #005CFF) 1;
     box-shadow: 0px 6px 20px rgba(0,0,0,0.15);'>
     """
+    card += f"<h2 style='color:#005CFF;'>Prediction Summary</h2>"
+    card += f"<p><b>Next-day Sentiment:</b> {pred}</p>"
+    card += f"<p><b>Probability:</b> {prob_pct:.2f}%</p>"
+    card += f"<p><b>Confidence:</b> {conf_text}</p>"
+    card += f"<p><b>Model Accuracy:</b> {stats['test_accuracy']*100:.1f}%</p>"
+    card += "</div>"
 
-    card_html += f"<h2 style='color:#005CFF;'>Prediction Summary</h2>"
-    card_html += f"<p><b>Next-day Sentiment:</b> {pred}</p>"
-    card_html += f"<p><b>Probability:</b> {prob_pct:.2f}%</p>"
-    card_html += f"<p><b>Confidence:</b> {conf_text}</p>"
-    card_html += f"<p><b>Model Accuracy:</b> {stats['test_accuracy']*100:.1f}%</p>"
-    card_html += "</div>"
+    st.markdown(card, unsafe_allow_html=True)
 
-    st.markdown(card_html, unsafe_allow_html=True)
-
-    # --- Metrics ---
+    # --- Model Metrics ---
     st.subheader("📈 Model Test Metrics")
     st.write(f"Accuracy: {stats['test_accuracy']:.3f}")
     st.write(f"Precision: {stats['test_precision']:.3f}")
@@ -198,21 +152,6 @@ if file:
     st.write(f"F1 Score: {stats['test_f1']:.3f}")
     st.caption(f"Evaluated on {stats['num_test_samples']} samples.")
 
-    # --- PDF Download ---
-    st.subheader("📥 Download PDF Report")
-
-    pdf_bytes = generate_pdf(
-        pred=pred,
-        prob=prob_pct,
-        conf_text=conf_text,
-        accuracy=stats["test_accuracy"]*100,
-        summary=summary,
-        pil_img=pil_img
-    )
-
-    st.download_button(
-        label="Download PDF Report",
-        data=pdf_bytes,
-        file_name="candlestick_report.pdf",
-        mime="application/pdf"
-    )
+    # --- Executive Summary Display ---
+    st.subheader("📝 Executive Summary")
+    st.write(summary)
